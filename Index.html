@@ -1,0 +1,405 @@
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Field Goal Kicker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #87CEEB; /* Sky blue */
+            touch-action: none; /* Prevent default touch actions like zooming/scrolling */
+            font-family: 'Inter', system-ui, sans-serif;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* Let touches pass through to canvas */
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        .hud-text {
+            color: white;
+            font-size: 1.5rem;
+            font-weight: 800;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.7);
+        }
+        #message-overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 4rem;
+            font-weight: 900;
+            text-transform: uppercase;
+            text-align: center;
+            opacity: 0;
+            transition: opacity 0.2s ease-in-out;
+            text-shadow: 3px 3px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;
+        }
+        .msg-goal { color: #4ade80; } /* Tailwind green-400 */
+        .msg-miss { color: #f87171; } /* Tailwind red-400 */
+        
+        #instruction {
+            position: absolute;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 1.2rem;
+            color: white;
+            text-shadow: 1px 1px 3px rgba(0,0,0,0.8);
+            text-align: center;
+            animation: pulse 1.5s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="gameCanvas"></canvas>
+    
+    <div id="ui-layer">
+        <div class="flex justify-between w-full">
+            <div id="scoreDisplay" class="hud-text">Score: 0</div>
+            <div id="windDisplay" class="hud-text">Wind: 0 mph</div>
+        </div>
+        <div id="instruction" class="hud-text">TAP TO KICK</div>
+    </div>
+    <div id="message-overlay">GOAL!</div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    // UI Elements
+    const scoreDisplay = document.getElementById('scoreDisplay');
+    const windDisplay = document.getElementById('windDisplay');
+    const messageOverlay = document.getElementById('message-overlay');
+    const instruction = document.getElementById('instruction');
+
+    // Game Variables
+    let width, height;
+    let score = 0;
+    let windSpeed = 0; // Negative for left, positive for right
+    let gameState = 'AIMING'; // AIMING, KICKING, RESOLVING
+
+    // Entities
+    const goalPosts = {
+        y: 0, // Set in resize
+        crossbarY: 0,
+        gap: 120, // Distance between uprights
+        height: 150, // Height of uprights above crossbar
+        postWidth: 8
+    };
+
+    const ball = {
+        startX: 0,
+        startY: 0,
+        x: 0,
+        y: 0,
+        z: 1, // Depth scale (1 = near, 0.3 = at posts)
+        vx: 0,
+        vy: 0,
+        vz: 0,
+        radius: 20
+    };
+
+    const arrow = {
+        angle: 0,
+        direction: 1,
+        speed: 0.03, // Speed of sweeping
+        maxAngle: Math.PI / 3 // 60 degrees max sweep each way
+    };
+
+    function resize() {
+        width = window.innerWidth;
+        height = window.innerHeight;
+        canvas.width = width;
+        canvas.height = height;
+
+        // Position Goal Posts (upper third of screen)
+        goalPosts.crossbarY = height * 0.3;
+        goalPosts.y = height * 0.4; // Base of the goal post stand
+
+        // Position Ball (bottom center)
+        ball.startX = width / 2;
+        ball.startY = height * 0.85;
+        
+        if (gameState === 'AIMING') {
+            resetBall();
+        }
+    }
+
+    function generateWind() {
+        // Random wind between -15 and 15 mph
+        windSpeed = Math.floor(Math.random() * 31) - 15;
+        updateUI();
+    }
+
+    function updateUI() {
+        scoreDisplay.innerText = `Score: ${score}`;
+        
+        if (windSpeed === 0) {
+            windDisplay.innerText = `Wind: 0 mph`;
+        } else {
+            const dir = windSpeed > 0 ? '➔' : '⬅';
+            windDisplay.innerText = `Wind: ${Math.abs(windSpeed)} mph ${dir}`;
+        }
+    }
+
+    function showMessage(text, type) {
+        messageOverlay.innerText = text;
+        messageOverlay.className = type === 'goal' ? 'msg-goal' : 'msg-miss';
+        messageOverlay.style.opacity = 1;
+        instruction.style.opacity = 0;
+        
+        setTimeout(() => {
+            messageOverlay.style.opacity = 0;
+            resetRound();
+        }, 2000);
+    }
+
+    function resetBall() {
+        ball.x = ball.startX;
+        ball.y = ball.startY;
+        ball.z = 1;
+        ball.vx = 0;
+        ball.vy = 0;
+        ball.vz = 0;
+    }
+
+    function resetRound() {
+        resetBall();
+        gameState = 'AIMING';
+        instruction.style.opacity = 1;
+    }
+
+    function kick() {
+        if (gameState !== 'AIMING') return;
+        
+        gameState = 'KICKING';
+        instruction.style.opacity = 0;
+        
+        // Calculate initial velocities based on arrow angle
+        const power = 15;
+        ball.vx = Math.sin(arrow.angle) * power;
+        // The ball travels 'up' the screen (y decreases) and 'into' the screen (z decreases)
+        ball.vy = -18; // Speed travelling up the screen
+        ball.vz = -0.015; // Speed of shrinking (depth)
+    }
+
+    // Input handlers
+    window.addEventListener('pointerdown', (e) => {
+        // Prevent default touch behavior
+        e.preventDefault();
+        kick();
+    }, { passive: false });
+
+    // Main Game Loop
+    function update() {
+        if (gameState === 'AIMING') {
+            // Sweep arrow
+            arrow.angle += arrow.speed * arrow.direction;
+            if (arrow.angle > arrow.maxAngle) {
+                arrow.angle = arrow.maxAngle;
+                arrow.direction = -1;
+            } else if (arrow.angle < -arrow.maxAngle) {
+                arrow.angle = -arrow.maxAngle;
+                arrow.direction = 1;
+            }
+        } 
+        else if (gameState === 'KICKING') {
+            // Apply wind to horizontal velocity (wind pushes ball over time)
+            // windSpeed of 10 mph ~ 0.2 pixels per frame adjustment
+            ball.vx += (windSpeed * 0.015);
+
+            // Move ball
+            ball.x += ball.vx;
+            ball.y += ball.vy;
+            ball.z += ball.vz;
+            
+            // Apply a slight gravity effect to the vertical speed to create an arc
+            ball.vy += 0.2; 
+
+            // Check if ball has reached the posts depth
+            if (ball.z <= 0.4) { // 0.4 scale represents the distance of the goal posts
+                checkGoal();
+            }
+            
+            // Fallback: If ball goes off screen or shrinks too much
+            if (ball.y < -100 || ball.z <= 0.1) {
+                if (gameState === 'KICKING') {
+                    gameState = 'RESOLVING';
+                    showMessage('MISS!', 'miss');
+                }
+            }
+        }
+    }
+
+    function checkGoal() {
+        gameState = 'RESOLVING';
+        
+        // Determine goal post bounds at the crossbar height
+        const centerX = width / 2;
+        const leftPostX = centerX - (goalPosts.gap / 2);
+        const rightPostX = centerX + (goalPosts.gap / 2);
+        
+        // Check if ball's x is within the uprights AND its y is above the crossbar
+        // Note: Canvas Y increases downwards, so "above" means y is less than crossbarY
+        if (ball.x > leftPostX && ball.x < rightPostX && ball.y < goalPosts.crossbarY) {
+            score++;
+            updateUI();
+            generateWind();
+            showMessage('GOAL!', 'goal');
+        } else {
+            showMessage('MISS!', 'miss');
+        }
+    }
+
+    function draw() {
+        // Clear canvas (Sky is set in CSS, but let's draw it anyway for cleanliness)
+        ctx.fillStyle = '#87CEEB';
+        ctx.fillRect(0, 0, width, height);
+
+        // Draw Grass (Bottom 60%)
+        const horizon = height * 0.4;
+        ctx.fillStyle = '#4ade80'; // Base green
+        ctx.fillRect(0, horizon, width, height - horizon);
+        
+        // Faux-3D field lines
+        ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (let i = 0; i < 10; i++) {
+            let lineY = horizon + (i * i * 6); // Perspective spacing
+            if (lineY > height) break;
+            ctx.moveTo(0, lineY);
+            ctx.lineTo(width, lineY);
+        }
+        ctx.stroke();
+
+        // Draw Goal Posts
+        const cx = width / 2;
+        ctx.fillStyle = '#fde047'; // Yellow
+        ctx.strokeStyle = '#a16207'; // Dark yellow outline
+        ctx.lineWidth = 2;
+        
+        // Base pole (optional, for college/pro style)
+        ctx.fillRect(cx - goalPosts.postWidth/2, goalPosts.crossbarY, goalPosts.postWidth, goalPosts.y - goalPosts.crossbarY);
+        ctx.strokeRect(cx - goalPosts.postWidth/2, goalPosts.crossbarY, goalPosts.postWidth, goalPosts.y - goalPosts.crossbarY);
+        
+        // Crossbar
+        ctx.fillRect(cx - goalPosts.gap/2, goalPosts.crossbarY - goalPosts.postWidth, goalPosts.gap, goalPosts.postWidth);
+        ctx.strokeRect(cx - goalPosts.gap/2, goalPosts.crossbarY - goalPosts.postWidth, goalPosts.gap, goalPosts.postWidth);
+        
+        // Uprights
+        // Left
+        ctx.fillRect(cx - goalPosts.gap/2 - goalPosts.postWidth, goalPosts.crossbarY - goalPosts.height, goalPosts.postWidth, goalPosts.height);
+        ctx.strokeRect(cx - goalPosts.gap/2 - goalPosts.postWidth, goalPosts.crossbarY - goalPosts.height, goalPosts.postWidth, goalPosts.height);
+        // Right
+        ctx.fillRect(cx + goalPosts.gap/2, goalPosts.crossbarY - goalPosts.height, goalPosts.postWidth, goalPosts.height);
+        ctx.strokeRect(cx + goalPosts.gap/2, goalPosts.crossbarY - goalPosts.height, goalPosts.postWidth, goalPosts.height);
+
+        // Draw Aiming Arrow
+        if (gameState === 'AIMING') {
+            ctx.save();
+            ctx.translate(ball.x, ball.y - 30);
+            ctx.rotate(arrow.angle);
+            
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(0, -80);
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+            ctx.lineWidth = 4;
+            ctx.stroke();
+            
+            // Arrowhead
+            ctx.beginPath();
+            ctx.moveTo(-10, -70);
+            ctx.lineTo(0, -90);
+            ctx.lineTo(10, -70);
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+            ctx.fill();
+            
+            ctx.restore();
+        }
+
+        // Draw Ball
+        ctx.save();
+        ctx.translate(ball.x, ball.y);
+        ctx.scale(ball.z, ball.z); // Apply depth scaling
+        
+        // Football shape
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 15, 25, 0, 0, Math.PI * 2);
+        ctx.fillStyle = '#8B4513'; // SaddleBrown
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#5c2e0b';
+        ctx.stroke();
+
+        // White stripes
+        ctx.beginPath();
+        ctx.moveTo(-12, -15);
+        ctx.lineTo(12, -15);
+        ctx.moveTo(-12, 15);
+        ctx.lineTo(12, 15);
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        
+        // Laces
+        ctx.beginPath();
+        ctx.moveTo(0, -8);
+        ctx.lineTo(0, 8);
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        for(let i = -6; i <= 6; i+=4) {
+            ctx.beginPath();
+            ctx.moveTo(-4, i);
+            ctx.lineTo(4, i);
+            ctx.stroke();
+        }
+
+        ctx.restore();
+    }
+
+    function gameLoop() {
+        update();
+        draw();
+        requestAnimationFrame(gameLoop);
+    }
+
+    // Initialization
+    window.addEventListener('resize', resize);
+    resize();
+    generateWind(); // Initial wind
+    updateUI();
+    
+    // Start Loop
+    requestAnimationFrame(gameLoop);
+
+</script>
+</body>
+</html>
+```
